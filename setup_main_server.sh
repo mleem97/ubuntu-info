@@ -75,7 +75,93 @@ sudo systemctl restart smbd.service
 sudo ufw allow samba
 sudo ufw reload
 
-# Installation und Konfiguration auf dem Client
+# Vorbereitung Ansible Server
+sudo adduser ansible
+sudo bash -c "echo 'ansible ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers"
+
+# Vorbereitung Ansible Client
+sudo apt install ansible ansible-lint sshpass -y
+sudo adduser ansible
+
+ANSIBLE_HOSTS="/etc/ansible/hosts"
+echo "[ubuntuserver]
+192.168.100.1 ansible_user=ansible ansible_ssh_pass=[PASSWORT] ansible_become_pass=[PASSWORT]" | sudo tee -a $ANSIBLE_HOSTS
+
+# Ansible Playbooks erstellen
+ANSIBLE_PLAYBOOK_DIR="$HOME/ansible-playbooks"
+mkdir -p $ANSIBLE_PLAYBOOK_DIR
+
+cat <<EOL > $ANSIBLE_PLAYBOOK_DIR/update_upgrade.yml
+---
+- hosts: ubuntuserver
+  become: true
+  gather_facts: yes
+  tasks:
+    - name: Warten, bis der APT-Lock freigegeben wird
+      shell: while sudo fuser /var/lib/dpkg/lock >/dev/null 2>&1; do sleep 5; done;
+
+    - name: Update APT-Paketliste
+      apt:
+        update_cache: yes
+        force_apt_get: yes
+        cache_valid_time: 3600
+
+    - name: Perform a dist-upgrade.
+      ansible.builtin.apt:
+        upgrade: dist
+        update_cache: yes
+
+    - name: Check if a reboot is required.
+      ansible.builtin.stat:
+        path: /var/run/reboot-required
+        get_checksum: no
+      register: reboot_required_file
+
+    - name: Reboot the server (if required).
+      ansible.builtin.reboot:
+      when: reboot_required_file.stat.exists and reboot_required_file is defined
+
+    - name: Remove dependencies that are no longer required.
+      ansible.builtin.apt:
+        autoremove: yes
+
+    - name: Lösche nicht mehr benötigte APT-Caches
+      apt:
+        autoclean: yes
+EOL
+
+cat <<EOL > $ANSIBLE_PLAYBOOK_DIR/file_copy.yml
+---
+- hosts: ubuntuserver
+  become: true
+  tasks:
+    - name: Ordner anlegen
+      file:
+        path: /tmp/test
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+    
+    - name: Datei kopieren
+      copy:
+        src: /home/andreas/samba/allesmeins
+        dest: /tmp/test
+        owner: root
+        group: root
+        mode: u=rwx,g=rx,o=rx
+        backup: true  
+
+    - name: Datei um Text erweitern
+      blockinfile:
+        path: /tmp/test/allesmeins
+        block: |
+          Dieser Text wurde von
+          Ansible
+          eingefügt
+EOL
+
+# Client Setup Funktion
 CLIENT_SETUP() {
     echo "Konfiguration des Linux-Clients"
     sudo apt install cifs-utils -y
